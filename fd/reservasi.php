@@ -1,89 +1,108 @@
 <?php
 session_start();
-include 'koneksi.php';
+require_once 'koneksi.php'; // Pastikan file ini ada dan terhubung ke database
 
 // Pastikan pengguna sudah login
-if (!isset($_SESSION['user'])) {
-    header('Location: index.php');
-    exit;
+if (!isset($_SESSION['user']) || !isset($_SESSION['user']['user_id'])) {
+    die("Data pengguna tidak valid. Silakan login terlebih dahulu.");
 }
 
-// Cek apakah parameter GET ada dan valid
-// if (!isset($_GET['keberangkatan']) || !isset($_GET['tujuan'])) {
-//     die("Keberangkatan atau Tujuan tidak ditemukan.");
-// }
+// Ambil data pengguna dari session
+$user_id = $_SESSION['user']['user_id']; // Ambil user_id dari session
 
-// Ambil parameter keberangkatan dan tujuan dari URL
-$keberangkatan = $_GET['keberangkatan'];
-$tujuan = $_GET['tujuan'];
+// Ambil data dari query string (keberangkatan dan tujuan)
+$keberangkatan = $_GET['keberangkatan'] ?? '';
+$tujuan = $_GET['tujuan'] ?? '';
 
-$query = "SELECT * FROM buses WHERE keberangkatan = ? AND tujuan = ?";
-$stmt = $koneksi->prepare($query);
-$stmt->bind_param("ss", $keberangkatan, $tujuan);
-$stmt->execute();
-$result = $stmt->get_result();
+// Periksa apakah parameter keberangkatan dan tujuan tersedia
+if (empty($keberangkatan) || empty($tujuan)) {
+    die("Parameter keberangkatan dan tujuan diperlukan.");
+}
 
-// Cek apakah ada bus yang ditemukan
-$no_bus_message = "";
-if ($result->num_rows == 0) {
-    $no_bus_message = "Tidak ada bus yang ditemukan untuk rute ini.";
+// Ambil data bus berdasarkan keberangkatan dan tujuan
+$query = $koneksi->prepare("SELECT * FROM buses WHERE keberangkatan = ? AND tujuan = ?");
+$query->bind_param('ss', $keberangkatan, $tujuan);
+$query->execute();
+$result = $query->get_result();
+$bus = $result->fetch_assoc();
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $bus_id = $_POST['bus_id'];
+    $tanggal = $_POST['tanggal'];
+    $jam = $_POST['jam'];
+    $kursi = (int) $_POST['kursi'];
+
+    // Validasi jumlah kursi tersedia
+    if ($kursi > $bus['available_seats']) {
+        $error = 'Jumlah kursi melebihi ketersediaan.';
+    } else {
+        // Simpan reservasi ke database
+        $stmt = $koneksi->prepare("INSERT INTO reservations (user_id, bus_id, tanggal, jam, kursi) VALUES (?, ?, ?, ?, ?)");
+        $stmt->bind_param('iissi', $user_id, $bus_id, $tanggal, $jam, $kursi);
+
+        if ($stmt->execute()) {
+            // Kurangi jumlah kursi tersedia
+            $updateQuery = $koneksi->prepare("UPDATE buses SET available_seats = available_seats - ? WHERE id = ?");
+            $updateQuery->bind_param('ii', $kursi, $bus_id);
+            $updateQuery->execute();
+
+            // Redirect ke halaman sukses
+            header('Location: notif-succes.php'); // Redirect ke halaman sukses
+            exit;
+        } else {
+            $error = 'Gagal melakukan reservasi. Coba lagi.';
+        }
+    }
 }
 ?>
 
 <!DOCTYPE html>
 <html lang="id">
 <head>
-    <title>Reservasi Tiket</title>
-    <link href="assets/css/styles.css" rel="stylesheet">
+    <title>Reservasi</title>
     <link href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
 </head>
 <body>
-    <div class="container">
-        <h2 class="mt-5">Formulir Reservasi</h2>
-        <form method="POST" action="proses_reservasi.php">
-            <input type="hidden" name="user_id" value="<?= $_SESSION['user']['id']; ?>">
+    <div class="container mt-5">
+        <h2>Reservasi Bus</h2>
+        <?php if (isset($error)): ?>
+            <div class="alert alert-danger"><?= htmlspecialchars($error); ?></div>
+        <?php endif; ?>
 
-            <div class="form-group">
-                <label>Keberangkatan</label>
-                <input type="text" name="keberangkatan" class="form-control" value="<?= htmlspecialchars($keberangkatan); ?>" readonly>
-            </div>
-            <div class="form-group">
-                <label>Tujuan</label>
-                <input type="text" name="tujuan" class="form-control" value="<?= htmlspecialchars($tujuan); ?>" readonly>
-            </div>
+        <?php if ($bus): ?>
+            <form method="POST">
+                <input type="hidden" name="bus_id" value="<?= htmlspecialchars($bus['id']); ?>">
 
-            <!-- Menampilkan pesan jika tidak ada bus -->
-            <?php if ($no_bus_message): ?>
-                <div class="alert alert-warning" role="alert">
-                    <?= $no_bus_message; ?>
-                </div>
-            <?php else: ?>
                 <div class="form-group">
-                    <label>Pilih Bus</label>
-                    <select name="bus_id" class="form-control" required>
-                        <option value="">Pilih Bus</option>
-                        <?php while ($row = $result->fetch_assoc()): ?>
-                            <option value="<?= $row['id']; ?>"><?= $row['bus_name']; ?> - <?= $row['price']; ?> IDR</option>
-                        <?php endwhile; ?>
-                    </select>
+                    <label>Nama Bus</label>
+                    <input type="text" class="form-control" value="<?= htmlspecialchars($bus['bus_name']); ?>" readonly>
                 </div>
-            <?php endif; ?>
 
-            <div class="form-group">
-                <label>Tanggal Keberangkatan</label>
-                <input type="date" name="tanggal" class="form-control" required>
-            </div>
-            <div class="form-group">
-                <label>Jam Keberangkatan</label>
-                <input type="time" name="jam" class="form-control" required>
-            </div>
-            <div class="form-group">
-                <label>Jumlah Kursi</label>
-                <input type="number" name="jumlah_kursi" class="form-control" required min="1" max="10">
-            </div>
+                <div class="form-group">
+                    <label>Kursi Tersedia</label>
+                    <input type="text" class="form-control" value="<?= htmlspecialchars($bus['available_seats']); ?>" readonly>
+                </div>
 
-            <button type="submit" class="btn btn-primary btn-block">Reservasi</button>
-        </form>
+                <div class="form-group">
+                    <label>Tanggal Reservasi</label>
+                    <input type="date" name="tanggal" class="form-control" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Jam Keberangkatan</label>
+                    <input type="time" name="jam" class="form-control" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Jumlah Kursi</label>
+                    <input type="number" name="kursi" class="form-control" required min="1" max="<?= htmlspecialchars($bus['available_seats']); ?>">
+                </div>
+
+                <button type="submit" class="btn btn-primary mt-3">Reservasi</button>
+            </form>
+        <?php else: ?>
+            <div class="alert alert-warning">Bus tidak ditemukan untuk rute ini.</div>
+        <?php endif; ?>
     </div>
 </body>
 </html>
